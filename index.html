@@ -1,154 +1,84 @@
 <!doctype html>
 <html>
 <head>
-  <meta charset="utf-8" />
-  <title>ESP32 BLE -> Web Bluetooth Demo</title>
+  <meta charset="utf-8">
+  <title>ESP32 via MQTT (Web)</title>
   <style>
-    body { font-family: Arial, sans-serif; max-width:800px; margin:40px auto; }
-    button{ margin:6px; padding:10px 14px; }
-    #log { white-space: pre-wrap; background:#f5f5f5; border:1px solid #ddd; padding:10px; height:240px; overflow:auto; }
-    .controls { margin-top:12px; }
+    body{font-family:Arial; max-width:900px;margin:20px auto}
+    button{margin:6px;padding:8px 12px}
+    #log{background:#f7f7f7;border:1px solid #ddd;padding:8px;height:300px;overflow:auto;white-space:pre-wrap}
+    input{padding:6px}
   </style>
 </head>
 <body>
-  <h2>ESP32 BLE Web Demo</h2>
-  <p>Device name: <b>ESP32-simple</b> — Service UUID: <code>0000ffee-0000-1000-8000-00805f9b34fb</code></p>
+  <h2>ESP32 -> Web via MQTT</h2>
+  <p>Broker: <b>broker.hivemq.com</b> (public)</p>
 
   <div>
     <button id="btnConnect">Connect</button>
     <button id="btnDisconnect" disabled>Disconnect</button>
   </div>
 
-  <div class="controls">
-    <button id="btnPing" disabled>PING</button>
-    <button id="btnLedOn" disabled>LED ON</button>
-    <button id="btnLedOff" disabled>LED OFF</button>
-    <input id="echoInput" placeholder="ECHO text" />
+  <div style="margin-top:12px">
+    <button id="btnPing" disabled>Send: PING</button>
+    <button id="btnLedOn" disabled>Send: LED_ON</button>
+    <button id="btnLedOff" disabled>Send: LED_OFF</button>
+    <input id="txtEcho" placeholder="ECHO text" />
     <button id="btnEcho" disabled>Send ECHO</button>
   </div>
 
-  <h3>Notifications / Log</h3>
-  <div id="log">No connection yet.</div>
+  <h3>Log</h3>
+  <div id="log">No connection</div>
 
+<script src="https://unpkg.com/mqtt/dist/mqtt.min.js"></script>
 <script>
-const SERVICE_UUID = '0000ffee-0000-1000-8000-00805f9b34fb';
-const CHAR_CMD_UUID = '0000ffef-0000-1000-8000-00805f9b34fb';    // write
-const CHAR_NOTIFY_UUID = '0000fff0-0000-1000-8000-00805f9b34fb'; // notify
-
-let device = null;
-let server = null;
-let cmdChar = null;
-let notifyChar = null;
-
+const broker = 'broker.hivemq.com';
+const wsUrl = `wss://${broker}:8884/mqtt`; // HiveMQ secure websockets (might work). If fails, try ws://broker.hivemq.com:8000/mqtt
+let client = null;
 const logEl = document.getElementById('log');
-const btnConnect = document.getElementById('btnConnect');
-const btnDisconnect = document.getElementById('btnDisconnect');
-const btnPing = document.getElementById('btnPing');
-const btnLedOn = document.getElementById('btnLedOn');
-const btnLedOff = document.getElementById('btnLedOff');
-const btnEcho = document.getElementById('btnEcho');
-const echoInput = document.getElementById('echoInput');
-
-function log(...args) {
+function log(...args){
   const t = new Date().toLocaleTimeString();
-  logEl.textContent = t + '  ' + args.join(' ') + '\n' + logEl.textContent;
+  logEl.textContent = t + ' ' + args.join(' ') + '\n' + logEl.textContent;
 }
 
-// convert string -> bytes
-function strToBytes(s) {
-  return new TextEncoder().encode(s);
-}
-function bytesToStr(buf) {
-  return new TextDecoder().decode(buf);
+function setConnected(c){
+  document.getElementById('btnConnect').disabled = c;
+  document.getElementById('btnDisconnect').disabled = !c;
+  ['btnPing','btnLedOn','btnLedOff','btnEcho'].forEach(id => document.getElementById(id).disabled = !c);
 }
 
-async function connect() {
-  try {
-    log('Requesting Bluetooth device...');
-    device = await navigator.bluetooth.requestDevice({
-      filters: [{ namePrefix: 'ESP32' }], // helps but optional
-      optionalServices: [SERVICE_UUID]
-    });
-
-    device.addEventListener('gattserverdisconnected', onDisconnected);
-
-    log('Connecting GATT server...');
-    server = await device.gatt.connect();
-
-    log('Getting service...');
-    const service = await server.getPrimaryService(SERVICE_UUID);
-
-    log('Getting characteristics...');
-    // get both characteristics
-    cmdChar = await service.getCharacteristic(CHAR_CMD_UUID);
-    notifyChar = await service.getCharacteristic(CHAR_NOTIFY_UUID);
-
-    // enable notifications
-    await notifyChar.startNotifications();
-    notifyChar.addEventListener('characteristicvaluechanged', handleNotifications);
-
-    log('Connected — characteristics ready.');
+document.getElementById('btnConnect').addEventListener('click', ()=>{
+  log('Connecting to broker', wsUrl);
+  client = mqtt.connect(wsUrl, { keepalive: 30, reconnectPeriod: 5000 });
+  client.on('connect', () => {
+    log('MQTT connected');
     setConnected(true);
-  } catch (err) {
-    log('ERROR', err);
-    setConnected(false);
-  }
+    client.subscribe('esp32/hello');
+    client.subscribe('esp32/ack');
+  });
+  client.on('message', (topic, message) => {
+    log('MSG', topic, ':', message.toString());
+  });
+  client.on('error', (err) => log('MQTT error', err));
+  client.on('close', () => { log('MQTT closed'); setConnected(false); });
+});
+
+document.getElementById('btnDisconnect').addEventListener('click', ()=> {
+  if (client) client.end();
+});
+
+function sendCmd(txt){
+  if (!client || !client.connected) { log('Not connected'); return; }
+  client.publish('esp32/cmd', txt);
+  log('Sent cmd:', txt);
 }
 
-function onDisconnected() {
-  log('Device disconnected.');
-  setConnected(false);
-}
-
-function setConnected(connected) {
-  btnConnect.disabled = connected;
-  btnDisconnect.disabled = !connected;
-  btnPing.disabled = !connected;
-  btnLedOn.disabled = !connected;
-  btnLedOff.disabled = !connected;
-  btnEcho.disabled = !connected;
-}
-
-async function disconnect() {
-  if (!device) return;
-  if (device.gatt.connected) {
-    device.gatt.disconnect();
-  }
-  setConnected(false);
-  log('Disconnected by user.');
-}
-
-function handleNotifications(event) {
-  const value = event.target.value;
-  // value is a DataView
-  const bytes = new Uint8Array(value.buffer);
-  const s = bytesToStr(bytes);
-  log('Notification:', s);
-}
-
-async function writeCommand(text) {
-  if (!cmdChar) {
-    log('Command characteristic not found.');
-    return;
-  }
-  try {
-    const data = strToBytes(text);
-    await cmdChar.writeValue(data);
-    log('Wrote:', text);
-  } catch (err) {
-    log('Write ERROR:', err);
-  }
-}
-
-// Button handlers
-btnConnect.addEventListener('click', connect);
-btnDisconnect.addEventListener('click', disconnect);
-btnPing.addEventListener('click', ()=> writeCommand('PING'));
-btnLedOn.addEventListener('click', ()=> writeCommand('LED_ON'));
-btnLedOff.addEventListener('click', ()=> writeCommand('LED_OFF'));
-btnEcho.addEventListener('click', ()=> {
-  const txt = echoInput.value || 'Hello';
-  writeCommand('ECHO ' + txt);
+document.getElementById('btnPing').addEventListener('click', ()=> sendCmd('PING'));
+document.getElementById('btnLedOn').addEventListener('click', ()=> sendCmd('LED_ON'));
+document.getElementById('btnLedOff').addEventListener('click', ()=> sendCmd('LED_OFF'));
+document.getElementById('btnEcho').addEventListener('click', ()=> {
+  const t = document.getElementById('txtEcho').value || 'hello';
+  sendCmd('ECHO ' + t);
 });
 </script>
 </body>
